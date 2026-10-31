@@ -1,284 +1,206 @@
 # ▦ Stockbook — Perpetual Inventory & Valuation System
 
-> **Enterprise-grade, event-sourced perpetual inventory and financial valuation platform.**
-> Built with **Node.js, Express, React, and MongoDB**, featuring independent **FIFO** and **Moving Weighted Average (WAC)** valuation engines, physical batch-expiry tracking (FEFO), production Work-In-Progress (WIP) absorption, and automatic retroactive backdating revaluation.
+<p align="center">
+  <img src="https://img.shields.io/badge/Architecture-Event--Sourced%20Perpetual%20Ledger-153e35?style=for-the-badge" alt="Architecture" />
+  <img src="https://img.shields.io/badge/Node.js-20%2B%20%2F%2022%2B-339933?style=for-the-badge&logo=node.js&logoColor=white" alt="Node.js" />
+  <img src="https://img.shields.io/badge/React-19%20%2B%20Vite-61DAFB?style=for-the-badge&logo=react&logoColor=black" alt="React" />
+  <img src="https://img.shields.io/badge/MongoDB-Port%2027017-47A248?style=for-the-badge&logo=mongodb&logoColor=white" alt="MongoDB" />
+  <img src="https://img.shields.io/badge/Math-40--Digit%20Decimal%20Precision-blue?style=for-the-badge" alt="Precision" />
+</p>
 
 ---
 
-## 📑 Table of Contents
-1. [Executive Summary](#-executive-summary)
-2. [Core Capabilities & Features](#-core-capabilities--features)
-3. [Financial Valuation Engine Explained](#-financial-valuation-engine-explained)
-4. [System Architecture](#-system-architecture)
-5. [The 5 UI Modules](#-the-5-ui-modules)
-6. [Quickstart & Running Locally](#-quickstart--running-locally)
-7. [Comprehensive Workflow & Mathematical Example](#-comprehensive-workflow--mathematical-example)
-8. [API Reference](#-api-reference)
-9. [Tech Stack & Precision Standards](#-tech-stack--precision-standards)
+## 📌 At a Glance
+
+| What it does | Why it's different | Core Tech |
+|---|---|---|
+| Tracks every inventory movement and calculates asset valuation in real-time. | **Dual Valuation**: Runs **FIFO** and **Moving Weighted Average** side-by-side. | **React 19**, **Express 5**, **MongoDB**, **Decimal.js** |
+| Manages **Receipts**, **Sales**, **Production WIP**, **Returns**, and **Write-offs**. | **Backdating Engine**: Inserting an old receipt automatically recalculates all future COGS & balances. | Event-sourced replay engine (deterministic timeline) |
+| Enforces physical batch shelf-life (**FEFO**). | **Traceable Returns**: Restores original cost layer without altering past market rates. | Zero floating-point math; 40-digit decimal safety |
 
 ---
 
-## 🏛 Executive Summary
-
-Traditional inventory systems suffer from two fatal flaws:
-1. **Floating-Point Rounding Drift**: Binary IEEE 754 math corrupts ledger balance sheets over time ($0.1 + 0.2 \ne 0.3$).
-2. **Destructive Historical Updates**: Inability to record backdated deliveries or supplier invoice adjustments without corrupting historical cost layers and Cost of Goods Sold (COGS).
-
-**Stockbook** solves these challenges using an immutable, journal-driven architecture:
-- Every stock movement is recorded as an immutable business event.
-- An in-memory, deterministic **accounting replay engine** recalculates all cost layers, COGS, write-offs, and closing balances in chronological order.
-- Entering a transaction effective in the past automatically recomputes all downstream valuations while maintaining exact audit trails.
-- All financial calculations execute using **40-digit decimal-safe arithmetic**.
-
----
-
-## ⚡ Core Capabilities & Features
-
-### 1. Dual Accounting Valuation (FIFO & WAC)
-- Each item can be configured with either **FIFO** (First-In, First-Out) or **WAC** (Moving Weighted Average Cost).
-- The system simultaneously computes the entire ledger under **both methods**, providing instant executive side-by-side financial comparison matrices.
-
-### 2. Complete Stock Movement Spectrum (7 Movement Types)
-- **`RECEIPT`**: Inward purchase from suppliers with explicit unit cost; creates new purchase layers (FIFO) or updates moving average unit cost (WAC).
-- **`PRODUCTION_ISSUE`**: Issues raw materials into an active production job, moving material cost out of raw inventory and into **Company WIP**.
-- **`FINISHED_GOODS`**: Completes a production job, booking finished goods that absorb 100% of the accumulated raw material cost.
-- **`SALE`**: Delivers finished goods or items to customers, relieving oldest FIFO layers or current moving average cost into **Period COGS**.
-- **`RETURN`**: Customer sales return; references the exact original sale line and restores the original purchase cost layer back into inventory, crediting COGS.
-- **`WRITE_OFF`**: Records damaged, lost, or scrapped stock with a mandatory business reason, recognizing **Period Losses**.
-- **`TRANSFER`**: Transfers stock between warehouses without price or cost distortion.
-
-### 3. Traceable Sales Returns
-When goods are returned by customers, Stockbook does not make assumptions about current market price:
-- It looks up the original sale line.
-- Identifies the exact cost layer and batch allocated during the original sale.
-- Restores that specific cost layer into inventory and reduces net Period COGS accordingly.
-
-### 4. Automatic Batch Expiry Tracking (FEFO)
-- Separation of concerns: **Physical logistics uses FEFO** (First-Expired, First-Out) while **financial accounting uses FIFO/WAC**.
-- When an expiry-tracked batch reaches its expiry date, the engine automatically books an `EXPIRY` loss transaction, zeros out remaining physical units, and moves the asset value into **Period Losses**.
-
-### 5. Retrospective Backdated Posting
-- If an invoice or receipt dated 3 days ago is posted today, the engine re-sorts the global journal by effective date and replays all subsequent issues, production absorptions, and sales.
-- Downstream COGS and ending balances update to reflect true historical reality.
-
-### 6. Strict Data Validation & Idempotency
-- **Zero Negative Stock**: Movements that would cause stock to drop below zero at any point in time are rejected (`INSUFFICIENT_STOCK`).
-- **Idempotent API**: Repeated requests with the same `requestId` return the original transaction without duplicate postings.
-- **Referential Integrity**: Inactive items, non-existent warehouses, or mismatched production jobs are strictly blocked before journal insertion.
-
----
-
-## 🧮 Financial Valuation Engine Explained
-
-Stockbook maintains independent financial cost pools for each `(Item, Warehouse)` pair:
-
-### FIFO (First-In, First-Out)
-$$\text{Inventory Value} = \sum_{i=1}^{n} (\text{Quantity}_i \times \text{UnitCost}_i)$$
-When stock is issued (sold, transferred, or scrapped), the engine depletes the oldest available purchase layer first. If an issue spans multiple purchase layers, it creates multiple deterministic allocation rows.
-
-### Moving Weighted Average Cost (WAC)
-Upon every inward receipt:
-$$\text{New Average Cost} = \frac{\text{Current Inventory Value} + (\text{Received Quantity} \times \text{Received Unit Cost})}{\text{Current Quantity} + \text{Received Quantity}}$$
-All subsequent issues are valued at this exact moving average rate until the next receipt occurs. When stock is fully depleted, the engine ensures inventory value reaches exactly `0.00` with zero residual fractions.
-
----
-
-## 🏗 System Architecture
+## 🎯 6 Core Capabilities
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                       React Frontend                        │
-│   Dashboard  │  Stock Ledger  │  Movements  │  Reports      │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ JSON REST API
-┌──────────────────────────────▼──────────────────────────────┐
-│                    Express.js API Server                    │
-│   Route Layer  │  Zod Validation  │  Error Middleware       │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ Service Orchestration
-┌──────────────────────────────▼──────────────────────────────┐
-│               Deterministic Replay Domain Engine            │
-│   ├── Chronological Timeline Sorter                         │
-│   ├── FIFO Cost Layer Allocator (fifo.js)                   │
-│   ├── Moving WAC Calculator (weightedAverage.js)            │
-│   ├── FEFO Expiry Processor (expiry.js)                     │
-│   └── 40-Digit Decimal Math Core (Decimal.js)               │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ Atomic Ledger Append
-┌──────────────────────────────▼──────────────────────────────┐
-│                   MongoDB Database (Port 27017)             │
-│   ├── stockTransactions (Event Store)                       │
-│   ├── ledgerRevisions   (Sequence Lock)                     │
-│   └── Master Collections (items, warehouses, batches, jobs) │
-└─────────────────────────────────────────────────────────────┘
+  ┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
+  │ 1. Dual FIFO/WAC│       │ 2. Real-Time WIP│       │ 3. FEFO Expiry  │
+  │ Valuation Engine│       │   Absorption    │       │ Batch Tracking  │
+  └────────┬────────┘       └────────┬────────┘       └────────┬────────┘
+           │                         │                         │
+  ┌────────▼────────┐       ┌────────▼────────┐       ┌────────▼────────┐
+  │ 4. Backdated    │       │ 5. Traceable    │       │ 6. Zero Decimal │
+  │ Replay Engine   │       │ Sales Returns   │       │ Floating Drift  │
+  └─────────────────┘       └─────────────────┘       └─────────────────┘
 ```
+
+| Feature | How It Works | Business Value |
+|---|---|---|
+| **Dual Valuation** | Configurable per item (`FIFO` or `WAC`); calculates both methods simultaneously. | Compare tax and margin impacts between FIFO and WAC in real-time. |
+| **Production & WIP** | Issues raw materials to a Job (`Company WIP`), absorbed into finished goods on completion. | True manufacturing cost tracking without external spreadsheets. |
+| **Batch Expiry (FEFO)** | Batches track expiry dates. Items past their date automatically book an `EXPIRY` loss. | Prevents selling expired goods; isolates financial cost pools from physical lots. |
+| **Backdated Replay** | Journal entries sort by effective date. Inserting a past receipt re-values all downstream events. | Fix late supplier invoices without corrupting historical journal integrity. |
+| **Traceable Returns** | Sales returns link to the exact original sale line and restore its original cost layer. | Eliminates COGS distortion caused by arbitrary return cost assumptions. |
+| **Decimal Precision** | 40-digit decimal arithmetic via `Decimal.js` (`ROUND_HALF_UP`). | Guarantees Balance Sheet debits equal credits ($0.1 + 0.2 = 0.3$). |
 
 ---
 
-## 🖥 The 5 UI Modules
+## 🔄 Supported Stock Movement Types
 
-The frontend is organized into 5 focused tabs:
+| Movement | Direction | Inventory Impact | Financial Impact | Required Details |
+|:---:|:---:|---|---|---|
+| 🟢 **`RECEIPT`** | **IN** | Increases stock on hand | Adds new FIFO layer / updates WAC average | Quantity, `unitCost`, optional Batch |
+| 🔵 **`SALE`** | **OUT** | Decreases stock on hand | Relieves oldest layer / current WAC into **COGS** | Quantity, Item, Warehouse |
+| 🟡 **`RETURN`** | **IN** | Restores stock to warehouse | **Decreases COGS**; restores original cost layer | `referenceTransactionId`, `originalSaleLineId` |
+| 🟠 **`PRODUCTION_ISSUE`** | **OUT** | Decreases raw materials | Increases **Company WIP** asset | `productionJobId`, Raw Material Item |
+| 🟣 **`FINISHED_GOODS`** | **IN** | Increases finished goods | Clears WIP; absorbs accumulated material cost | `productionJobId`, Output Item |
+| 🔴 **`WRITE_OFF`** | **OUT** | Decreases stock on hand | Recognizes **Period Loss** (scrap/spoilage) | Quantity, mandatory `reason` |
+| ⚪ **`TRANSFER`** | **MOVE** | Moves stock between locations | Zero net value change; preserves cost allocations | Source & Destination Warehouses |
 
-### 1. Finance Dashboard
-- **Executive Metric Cards**: Real-time **Closing Inventory**, **Period COGS**, **Period Losses**, and **Company WIP**.
-- **Valuation Comparison Matrix**: Side-by-side comparison of **FIFO** vs. **Weighted Average Cost (WAC)** vs. **Item Default**, displaying asset variance.
-- **Production & WIP Tracker**: Live status of all production jobs with total raw materials absorbed.
-- **Asset Valuation Summary**: Tabular breakdown of asset value per item and warehouse.
+---
 
-### 2. Stock Ledger
-- **Perpetual Journal**: Complete chronological record of every receipt, sale, return, issue, transfer, and write-off.
-- **Layer Allocation Breakdown**: Expand any row to see exact purchase cost layers, unit costs, and batch origins.
-- **Stock on Hand Table**: Current on-hand quantities, physical batches, and expiry dates.
-- Instant search and pagination.
+## 🖥 The 5 System Modules
 
-### 3. Stock Movements
-- Unified form to post all 7 transaction types.
-- Context-aware validation:
-  - Automatically filters items to raw materials for production issues.
-  - Automatically populates output finished goods for jobs.
+<details open>
+<summary><b>1. 📊 Finance Dashboard</b></summary>
+
+- **Executive KPI Cards**: Real-time **Closing Inventory**, **Period COGS**, **Period Losses**, and **Company WIP**.
+- **Valuation Comparison Matrix**: Side-by-side comparison of **FIFO** vs. **WAC** vs. **Item Default** showing balance sheet variance.
+- **Production & WIP Tracker**: Live status of all production jobs with total accumulated raw material costs.
+- **Asset Summary Table**: Instant breakdown of stock values across warehouses.
+</details>
+
+<details open>
+<summary><b>2. 📜 Stock Ledger</b></summary>
+
+- **Perpetual Journal**: Complete chronological history of every transaction with signed quantities and financial values.
+- **Allocation Layer Inspector**: Expand any transaction to see the exact purchase layers, unit costs, and batches consumed.
+- **Stock on Hand Table**: Current inventory counts with batch numbers and expiry dates.
+</details>
+
+<details>
+<summary><b>3. ⚡ Stock Movements</b></summary>
+
+- Unified interface to record all 7 movement types.
+- **Smart Validation**:
+  - Restricts production issues to Raw Materials.
+  - Automatically selects finished good output for completed jobs.
   - Pulls original sale lines and quantities for sales returns.
-  - Mandates scrap reasons for write-offs.
+  - Rejects transactions that would lead to negative stock.
+</details>
 
-### 4. Valuation & Financial Reports
-- Complete reporting filters: **From Date**, **To / As-Of Date**, **Item**, **Warehouse**, and **Valuation Method**.
-- Three dedicated reports:
-  1. **Stock Valuation Report**: Units on hand, implied average unit cost, total valuation.
-  2. **Period COGS Report**: Sales issues and returns with net recognized cost of sales.
-  3. **Losses & Scrap Report**: Damaged stock, scrap write-offs, and batch expiries.
+<details>
+<summary><b>4. 📈 Valuation & Financial Reports</b></summary>
 
-### 5. Master Data
-- Full lifecycle management (Create, View, Edit, Deactivate, Delete) for:
-  - **Items**: SKU, name, type (Raw Material vs Finished Good), base unit, and Valuation Method (`FIFO` or `WAC`).
-  - **Warehouses**: Code, name, and active status.
-  - **Batches**: Batch code, item association, and first unusable date.
-  - **Production Jobs**: Job code and output finished good.
+- Filter by **Date Range (From / To)**, **Item**, **Warehouse**, and **Valuation Method**.
+- **3 Tabular Reports**:
+  1. *Stock Valuation Statement*: Quantities, implied average unit costs, and total valuation.
+  2. *Period COGS Report*: Sales issues and returns with net recognized cost of sales.
+  3. *Losses & Scrap Report*: Damaged stock, scrap write-offs, and batch expiries.
+</details>
+
+<details>
+<summary><b>5. 🗄 Master Data</b></summary>
+
+- **Items**: Create, edit, and deactivate items with valuation rules (`FIFO` or `WAC`) and expiry tracking toggles.
+- **Warehouses**: Manage multi-warehouse storage locations.
+- **Batches**: Register lot numbers with first unusable dates.
+- **Production Jobs**: Define manufacturing jobs linking raw materials to finished goods.
+</details>
 
 ---
 
-## 🚀 Quickstart & Running Locally
+## ⚡ Quickstart (Run in 2 Minutes)
 
-### Prerequisites
-- **Node.js** version `20+` or `22+`
-- **MongoDB** running locally on port **`27017`** (standard local service or MongoDB Compass)
-
-### 1. Clone & Install Dependencies
+### Step 1: Clone & Install
 ```powershell
-# Navigate to project folder
-cd "inventory"
-
-# Install all workspace dependencies
+cd inventory
 npm install
 ```
 
-### 2. Environment Configuration
-The server connects to your local MongoDB instance. Inspect `server/.env`:
-```env
-MONGODB_URI=mongodb://127.0.0.1:27017
-MONGODB_DATABASE=stockbook
-PORT=3001
-```
-
-### 3. Seed Comprehensive Demonstration Data
-Run the workflow seed script to populate realistic sample data:
+### Step 2: Seed Sample Data
+Ensure your local MongoDB is running on port **`27017`**, then run:
 ```powershell
 cd server
 npm run seed:workflow
 ```
-*This populates 4 items, sets up FIFO and WAC rules, issues raw materials, bakes finished goods, sells stock, performs returns, records write-offs, triggers batch expiries, and posts a backdated purchase.*
+> [!NOTE]
+> This creates 4 sample items, issues raw materials, bakes finished goods, executes sales, processes returns, writes off damaged stock, and executes a **backdated purchase** to demonstrate automatic revaluation.
 
-### 4. Launch the Full Application
-From the project root:
+### Step 3: Start the App
+From the root directory:
 ```powershell
 npm run dev
 ```
-- **Web UI**: Open **http://127.0.0.1:5173** in your browser.
-- **API Server**: Listening on **http://127.0.0.1:3001**.
+- 🌐 **Web App**: Open [**http://127.0.0.1:5173**](http://127.0.0.1:5173)
+- 🔌 **API Server**: Running on [**http://127.0.0.1:3001**](http://127.0.0.1:3001)
 
 ---
 
-## 📊 Comprehensive Workflow & Mathematical Example
+## 🔢 Step-by-Step Mathematical Walkthrough
 
-The automated seed scenario demonstrates how financial valuations behave in practice:
+Here is the exact numerical flow executed by the workflow seed:
 
-### 1. Raw Material with WAC (`DEMO-WHEAT`)
-- **Day 27**: Purchase 10 kg @ \$20/kg $\rightarrow$ Inventory: 10 kg, Value: \$200 (Avg: \$20.00)
-- **Day 28**: Purchase 10 kg @ \$30/kg $\rightarrow$ Inventory: 20 kg, Value: \$500 (Avg: \$25.00)
-- **Day 28**: Issue 6 kg to Production Job `DEMO-BAKE-001` $\rightarrow$ 6 kg @ \$25.00 = **\$150.00 transferred to WIP**. Remaining: 14 kg @ \$25.00 = \$350.
-- **Day 29**: Sale of 4 kg $\rightarrow$ COGS: 4 kg @ \$25.00 = **\$100.00**. Remaining: 10 kg @ \$25.00 = \$250.
-- **Day 30**: Write-off 1 kg damaged $\rightarrow$ Loss: 1 kg @ \$25.00 = **\$25.00**. Remaining: 9 kg = \$225.
+```
+[Day 27: Buy 10kg Wheat @ $20] ──┐
+                                 ├─► [Avg: $25.00/kg] ─► Issue 6kg to Bake Job ─► [$150 WIP]
+[Day 28: Buy 10kg Wheat @ $30] ──┘                                                      │
+                                                                                        ▼
+[Day 29: Complete Bake Job] ◄───────────────────────────────────────────────────────────┘
+   └─► Output: 3 Bread Packs @ $50.00/pack (absorbed $150 WIP)
+   └─► Sell 1 Pack @ Counter ─────────► COGS: $50.00
+   └─► Customer Returns 1 Pack ───────► COGS: -$50.00 (Restored to stock @ $50.00)
+   └─► Damaged in Counter ────────────► Write-Off Loss: $50.00
 
-### 2. Finished Goods Production (`DEMO-BREAD` - FIFO)
-- **Day 29**: Complete Job `DEMO-BAKE-001` $\rightarrow$ Output 3 bread packs.
-  - Absorbs \$150.00 WIP cost $\rightarrow$ Unit cost: **\$50.00 per pack**.
-- **Day 30**: Transfer 1 bread pack to Bakery Counter warehouse.
-- **Day 30**: Sell 1 bread pack from counter $\rightarrow$ COGS: **\$50.00**.
-- **Day 31**: Customer returns 1 bread pack $\rightarrow$ COGS reduced by **-\$50.00**, 1 pack restored to inventory @ \$50.00.
-- **Day 31**: Write off damaged return $\rightarrow$ Loss recognized: **\$50.00**.
+⭐ THE BACKDATED EVENT (Entered last, dated Day 26):
+   Buy 5kg Wheat @ $10/kg
+   └─► Replay Engine triggers!
+   └─► Wheat Average drops: $25.00/kg ──► $20.00/kg
+   └─► Bake Job WIP drops:  $150.00   ──► $120.00
+   └─► Bread Unit Cost:     $50.00    ──► $40.00
+   └─► Downstream COGS and Ending Valuations update automatically!
+```
 
-### 3. FIFO Finished Goods (`DEMO-COFFEE`)
-- **Day 27**: Purchase 10 kg @ \$50/kg (Layer 1 = \$500)
-- **Day 28**: Purchase 10 kg @ \$65/kg (Layer 2 = \$650)
-- **Day 29**: Sell 12 kg:
-  - Depletes Layer 1: 10 kg @ \$50 = \$500
-  - Depletes Layer 2: 2 kg @ \$65 = \$130
-  - Total COGS: **\$630.00**. Ending Stock: 8 kg @ \$65 = **\$520.00**.
-- **Day 30**: Return 1 kg $\rightarrow$ Restores Layer 2 @ \$65. COGS adjusted to **\$565.00**.
+### Comparison Table for Sample Dataset
 
-### 4. The Backdated Posting Test
-- **Entered last with effective date Day 26**: Purchase 5 kg `DEMO-WHEAT` @ \$10/kg.
-- **What happens**:
-  - The engine retroactively places this receipt before the Day 27 receipt.
-  - The moving average for `DEMO-WHEAT` automatically drops from \$25.00 to **\$20.00**.
-  - The 6 kg production issue cost drops from \$150.00 to **\$120.00**.
-  - The finished goods bread cost drops from \$50.00/pack to **\$40.00/pack**.
-  - Wheat COGS and write-offs recompute downwards.
-  - Closing inventory reflects exact mathematical reality across the entire journal.
+| Metric | Item Default | FIFO Valuation | WAC Valuation |
+|---|:---:|:---:|:---:|
+| **Closing Inventory** | **\$900.00** | **\$920.00** | **\$895.00** |
+| **Period COGS** | **\$645.00** | **\$615.00** | **\$650.00** |
+| **Period Losses** | **\$135.00** | **\$140.00** | **\$135.00** |
+| **Company WIP** | **\$0.00** (Job Closed) | **\$0.00** | **\$0.00** |
 
 ---
 
-## 📡 API Reference
+## 🔌 REST API Reference
 
-Base URL: `/api/v1`
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/health` | Service health and database ping check |
-| `GET` | `/items` | List catalog items |
-| `POST` | `/items` | Create new item (`sku`, `name`, `type`, `valuationMethod`, `baseUnit`) |
-| `PATCH` | `/items/:id` | Update item details (name, sku, or active status) |
-| `DELETE` | `/items/:id` | Delete item (prevented if referenced by historical transactions) |
-| `GET` | `/warehouses` | List warehouses |
-| `POST` | `/warehouses` | Create warehouse (`code`, `name`) |
-| `DELETE` | `/warehouses/:id` | Delete warehouse |
-| `GET` | `/batches` | List inventory batches with expiry dates |
-| `POST` | `/batches` | Register batch (`itemId`, `batchCode`, `expiryDate`) |
-| `GET` | `/production-jobs`| List production jobs and live WIP statuses |
-| `POST` | `/production-jobs`| Register production job (`jobCode`, `outputItemId`) |
-| `POST` | `/transactions` | Record a stock movement (`requestId`, `effectiveAt`, `type`, `lines`) |
-| `GET` | `/transactions` | List all transactions with date and warehouse filtering |
-| `GET` | `/reports/valuation` | Full multi-method valuation snapshot (`fifo`, `wac`, `item`) |
-| `GET` | `/reports/cogs` | Filtered Cost of Goods Sold report |
-| `GET` | `/reports/losses` | Filtered Scrap and Expiry losses report |
+| Endpoint | Method | Purpose |
+|---|:---:|---|
+| `/api/v1/health` | `GET` | Health check & MongoDB ping |
+| `/api/v1/items` | `GET` / `POST` | List or create catalog items (FIFO/WAC) |
+| `/api/v1/items/:id` | `PATCH` / `DELETE` | Update or delete item (deletions blocked if historical transactions exist) |
+| `/api/v1/warehouses` | `GET` / `POST` / `DELETE` | Manage storage facilities |
+| `/api/v1/batches` | `GET` / `POST` | Track item batches with expiry dates |
+| `/api/v1/production-jobs` | `GET` / `POST` | Production jobs and live WIP statuses |
+| `/api/v1/transactions` | `POST` | Post an immutable stock movement |
+| `/api/v1/transactions` | `GET` | Query perpetual journal with date/item filters |
+| `/api/v1/reports/valuation` | `GET` | Multi-method valuation summary (`fifo`, `wac`, `item`) |
+| `/api/v1/reports/cogs` | `GET` | Cost of Goods Sold analysis |
+| `/api/v1/reports/losses` | `GET` | Scrap write-offs and batch expiry losses |
 
 ---
 
-## 🛠 Tech Stack & Precision Standards
+## 🛠 Technology Stack
 
-| Component | Technology | Role |
-|---|---|---|
-| **Backend** | Node.js (ES Modules) + Express 5 | High-performance API server |
-| **Frontend** | React 19 + Vite | Responsive, zero-latency SPA |
-| **Database** | MongoDB 6.0+ (Port 27017) | Event store and catalog persistence |
-| **Validation** | Zod 4 | Strict runtime schema enforcement |
-| **Financial Math** | Decimal.js (`precision: 40`) | 40-digit decimal-safe calculation engine |
-| **Styling** | Modular Vanilla CSS | Clean, responsive design |
+- **Frontend**: React 19, Vite, Pure CSS (Zero UI library dependencies)
+- **Backend**: Node.js (ES Modules), Express 5
+- **Database**: MongoDB 6.0+ (Port 27017, Standalone or Replica Set compatible)
+- **Validation**: Zod 4 runtime schema enforcement
+- **Math Engine**: Decimal.js (40-digit decimal-safe calculation core)
+- **Testing**: Node.js built-in test runner (`node --test`)
 
 ---
 
-## ⚖️ License
-Internal Proprietary Enterprise System — Stockbook Accounting & Valuation Engine.
-All rights reserved.
-
-
-#   I n v e n t o r y _ V a l u a t i o n _ A n d _ S t o c k _ L e d g e r _ M a n a g e m e n t _ S y s t e m  
- 
+<p align="center">
+  <b>Stockbook Inventory & Valuation Platform</b> · Enterprise-Grade Accounting Engine
+</p>
